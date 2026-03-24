@@ -21,7 +21,7 @@
             <p class="text-muted mb-2">
                 👤 {{ post.author }} &nbsp;|&nbsp; 📅 {{ post.created_at.strftime('%Y-%m-%d') }}
             </p>
-            <p class="card-text content-text">{{ post.content|striptags[:200] }}{% if post.content|striptags|length > 200 %}...{% endif %}</p>
+            <p class="card-text content-text">{{ (post.content|striptags)[:200] }}{% if (post.content|striptags)|length > 200 %}...{% endif %}</p>
         </div>
         <div class="card-footer bg-transparent border-0 pt-0 pb-3 px-4">
             <a href="{{ url_for('post.post_detail', id=post.id) }}" class="btn btn-sm btn-primary">阅读全文 →</a>
