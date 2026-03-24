@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}{{ post.title }}{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <a href="{{ url_for('main.index') }}" class="back-btn">← 返回首页</a>
+    <div class="card mt-3">
+        <div class="card-body p-5">
+            <div class="d-flex justify-content-between align-items-start">
+                <div>
+                    <h1 class="mb-3">{{ post.title }}</h1>
+                    <p class="text-muted mb-4">
+                        👤 {{ post.author }} &nbsp;&nbsp;
+                        ⏰ {{ post.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+                    </p>
+                </div>
+                <div class="d-flex gap-2">
+                    <a href="{{ url_for('post.append_update', id=post.id) }}" class="btn btn-outline-primary btn-sm">➕ 追加更新</a>
+                    <form method="POST" action="{{ url_for('post.delete_post', id=post.id) }}" onsubmit="return confirm('确定要删除这篇文章吗？此操作不可恢复！')" style="display: inline;">
+                        <button type="submit" class="btn btn-outline-danger btn-sm">🗑️ 删除</button>
+                    </form>
+                </div>
+            </div>
+            <hr>
+            <div class="article-content mt-4">{{ post.content|safe }}</div>
+            
+            {% if updates %}
+            <div class="updates-section mt-5">
+                <h3 style="color: var(--neon-cyan); font-family: Orbitron; margin-bottom: 20px;">◈ 更新记录</h3>
+                {% for update in updates %}
+                <div class="update-item" style="margin-bottom: 30px; padding: 20px; background: rgba(0,0,0,0.2); border-left: 3px solid var(--neon-pink); border-radius: 0 4px 4px 0;">
+                    <div class="update-header" style="color: var(--neon-pink); font-size: 0.85rem; margin-bottom: 10px;">
+                        📌 第{{ loop.index }}次更新 &nbsp;|&nbsp; {{ update.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+                    </div>
+                    <div class="update-content article-content">{{ update.content|safe }}</div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

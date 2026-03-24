@@ -1,0 +1,1989 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import pymysql
+import os
+import base64
+import re
+from flask import Flask, request, redirect, url_for, flash, session
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from datetime import datetime, date
+from lunarcalendar import Converter, Solar
+from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
+
+app = Flask(__name__)
+app.secret_key = 'blog-secret-key-2024'
+
+# Flask-Login 配置
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+login_manager.login_message = '请先登录'
+login_manager.login_message_category = 'info'
+
+# 用户配置（单用户系统）
+ADMIN_USERNAME = 'feizi'
+ADMIN_PASSWORD_HASH = generate_password_hash('feizi')
+
+class User(UserMixin):
+    def __init__(self, id):
+        self.id = id
+        self.username = ADMIN_USERNAME
+    
+    def get_id(self):
+        return str(self.id)
+
+@login_manager.user_loader
+def load_user(user_id):
+    if user_id == '1':
+        return User(user_id)
+    return None
+
+# 上传配置
+UPLOAD_FOLDER = '/home/admin/.openclaw/workspace/blog/static/uploads'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# 科技名言库
+TECH_QUOTES = [
+    ("Talk is cheap. Show me the code.", "Linus Torvalds"),
+    ("The only way to do great work is to love what you do.", "Steve Jobs"),
+    ("Code is like humor. When you have to explain it, it's bad.", "Cory House"),
+    ("First, solve the problem. Then, write the code.", "John Johnson"),
+    ("Any fool can write code that a computer can understand.", "Martin Fowler"),
+    ("Simplicity is the soul of efficiency.", "Austin Freeman"),
+    ("Make it work, make it right, make it fast.", "Kent Beck"),
+    ("The best error message is the one that never shows up.", "Thomas Fuchs"),
+    ("Deleted code is debugged code.", "Jeff Sickel"),
+    ("It's not a bug, it's a feature.", "Anonymous"),
+]
+
+# 风水宜忌数据（简化版）
+FENGSHUI_DATA = {
+    'yi': ['编程', '写博客', '学习新技术', '重构代码', '部署上线'],
+    'ji': ['改需求', '删库', '硬编码', '复制粘贴', '通宵加班']
+}
+
+def get_daily_quote():
+    """获取每日名言"""
+    import random
+    return random.choice(TECH_QUOTES)
+
+def get_fengshui():
+    """获取今日风水"""
+    import random
+    yi = random.sample(FENGSHUI_DATA['yi'], 3)
+    ji = random.sample(FENGSHUI_DATA['ji'], 2)
+    return {'yi': yi, 'ji': ji}
+
+# 节日数据
+FESTIVALS = {
+    (1, 1): '元旦',
+    (2, 14): '情人节',
+    (3, 8): '妇女节',
+    (3, 12): '植树节',
+    (4, 1): '愚人节',
+    (5, 1): '劳动节',
+    (5, 4): '青年节',
+    (6, 1): '儿童节',
+    (7, 1): '建党节',
+    (8, 1): '建军节',
+    (9, 10): '教师节',
+    (10, 1): '国庆节',
+    (10, 24): '程序员节',
+    (11, 11): '双十一',
+    (12, 25): '圣诞节',
+}
+
+LUNAR_FESTIVALS = {
+    '正月初一': '春节',
+    '正月十五': '元宵节',
+    '五月初五': '端午节',
+    '七月初七': '七夕',
+    '八月十五': '中秋节',
+    '九月初九': '重阳节',
+    '腊月三十': '除夕',
+}
+
+def get_lunar_date(solar_date):
+    """获取农历日期"""
+    lunar = Converter.Solar2Lunar(Solar(solar_date.year, solar_date.month, solar_date.day))
+    lunar_month = lunar.month
+    lunar_day = lunar.day
+    
+    # 农历月份名称
+    lunar_months = ['正', '二', '三', '四', '五', '六', '七', '八', '九', '十', '冬', '腊']
+    lunar_days = ['初一', '初二', '初三', '初四', '初五', '初六', '初七', '初八', '初九', '初十',
+                  '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十',
+                  '廿一', '廿二', '廿三', '廿四', '廿五', '廿六', '廿七', '廿八', '廿九', '三十']
+    
+    lunar_str = lunar_days[lunar_day-1]  # 只显示初几，不显示月份
+    lunar_key = f"{lunar_months[lunar_month-1]}月{lunar_days[lunar_day-1]}"
+    lunar_festival = LUNAR_FESTIVALS.get(lunar_key, '')
+    
+    return lunar_str, lunar_festival
+
+def get_festival(month, day):
+    """获取公历节日"""
+    return FESTIVALS.get((month, day), '')
+
+def generate_calendar(year=None, month=None, selected_date=None):
+    """生成交互式日历HTML"""
+    import calendar
+    
+    if year is None:
+        year = datetime.now().year
+    if month is None:
+        month = datetime.now().month
+    
+    cal = calendar.Calendar()
+    month_days = cal.monthdayscalendar(year, month)
+    month_names = ['', '一月', '二月', '三月', '四月', '五月', '六月', 
+                   '七月', '八月', '九月', '十月', '十一月', '十二月']
+    
+    html = f'''
+    <div class="calendar" id="calendar" data-year="{year}" data-month="{month}">
+        <div class="calendar-header">
+            <button type="button" onclick="changeMonth({year}, {month}, -1)">◀</button>
+            <span>{year}年 {month_names[month]}</span>
+            <button type="button" onclick="changeMonth({year}, {month}, 1)">▶</button>
+        </div>
+        <table class="calendar-table">
+            <tr>
+                <th>日</th><th>一</th><th>二</th><th>三</th><th>四</th><th>五</th><th>六</th>
+            </tr>
+    '''
+    
+    today = date.today()
+    for week in month_days:
+        html += '<tr>'
+        for day in week:
+            if day == 0:
+                html += '<td></td>'
+            else:
+                classes = []
+                current_date = date(year, month, day)
+                
+                # 今天高亮
+                if year == today.year and month == today.month and day == today.day:
+                    classes.append('today')
+                
+                # 选中日期
+                if selected_date and current_date == selected_date:
+                    classes.append('selected')
+                
+                # 获取农历和节日
+                lunar_str, lunar_festival = get_lunar_date(current_date)
+                solar_festival = get_festival(month, day)
+                festival = lunar_festival or solar_festival
+                
+                # 显示内容
+                display_text = str(day)
+                lunar_text = festival if festival else lunar_str
+                
+                html += f'''<td class="{' '.join(classes)}" onclick="selectDate({year}, {month}, {day})" data-date="{year}-{month:02d}-{day:02d}">
+                    <div class="day-num">{display_text}</div>
+                    <div class="day-lunar">{lunar_text}</div>
+                </td>'''
+        html += '</tr>'
+    
+    html += '''</table></div>'''
+    return html
+
+def get_date_data(target_date):
+    """获取指定日期的名言和风水（基于日期种子）"""
+    import random
+    # 使用日期作为随机种子，保证同一天显示相同内容
+    date_seed = target_date.toordinal()
+    random.seed(date_seed)
+    
+    quote = random.choice(TECH_QUOTES)
+    fengshui = {
+        'yi': random.sample(FENGSHUI_DATA['yi'], 3),
+        'ji': random.sample(FENGSHUI_DATA['ji'], 2)
+    }
+    
+    # 恢复随机种子
+    random.seed()
+    return {'quote': quote, 'fengshui': fengshui}
+
+def get_sidebar_data(year=None, month=None, selected_date=None):
+    """获取侧边栏数据"""
+    db = get_db()
+    cursor = db.cursor()
+    
+    # 所有文章（目录）
+    cursor.execute('SELECT id, title FROM posts ORDER BY created_at DESC')
+    all_posts = cursor.fetchall()
+    
+    # 最近5篇
+    cursor.execute('SELECT id, title, created_at FROM posts ORDER BY created_at DESC LIMIT 5')
+    recent_posts = cursor.fetchall()
+    
+    # 统计
+    cursor.execute('SELECT COUNT(*) as total FROM posts')
+    total = cursor.fetchone()['total']
+    
+    # 本周
+    cursor.execute('''SELECT COUNT(*) as week_count FROM posts 
+                      WHERE YEARWEEK(created_at) = YEARWEEK(NOW())''')
+    week_count = cursor.fetchone()['week_count']
+    
+    # 本月
+    cursor.execute('''SELECT COUNT(*) as month_count FROM posts 
+                      WHERE YEAR(created_at) = YEAR(NOW()) AND MONTH(created_at) = MONTH(NOW())''')
+    month_count = cursor.fetchone()['month_count']
+    
+    db.close()
+    
+    # 获取日期相关数据
+    if selected_date is None:
+        selected_date = date.today()
+    date_data = get_date_data(selected_date)
+    
+    return {
+        'all_posts': all_posts,
+        'recent_posts': recent_posts,
+        'stats': {'total': total, 'week': week_count, 'month': month_count},
+        'quote': date_data['quote'],
+        'fengshui': date_data['fengshui'],
+        'calendar': generate_calendar(year, month, selected_date),
+        'selected_date': selected_date
+    }
+
+# Database config
+DB_CONFIG = {
+    'host': '127.0.0.1',
+    'user': 'root',
+    'password': 'blog2024secure',
+    'database': 'blogdb',
+    'charset': 'utf8mb4',
+    'port': 3306
+}
+
+def get_db():
+    return pymysql.connect(**DB_CONFIG, cursorclass=pymysql.cursors.DictCursor)
+
+# 科幻风模板 - Cyberpunk Tech Theme
+BASE_HTML = '''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700&family=Rajdhani:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- Quill Editor CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.snow.css" rel="stylesheet">
+    
+    <!-- Highlight.js for code highlighting -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+    
+    <style>
+        :root {
+            --neon-cyan: #00f0ff;
+            --neon-pink: #ff00a0;
+            --neon-purple: #b829dd;
+            --neon-blue: #0080ff;
+            --dark-bg: #0a0a0f;
+            --darker-bg: #050508;
+            --card-bg: #12121a;
+            --border-glow: rgba(0, 240, 255, 0.3);
+        }
+        
+        * {
+            scrollbar-width: thin;
+            scrollbar-color: var(--neon-cyan) var(--darker-bg);
+        }
+        
+        body {
+            background: var(--dark-bg) !important;
+            background-image: 
+                radial-gradient(circle at 20% 50%, rgba(0, 240, 255, 0.03) 0%, transparent 50%),
+                radial-gradient(circle at 80% 80%, rgba(255, 0, 160, 0.03) 0%, transparent 50%),
+                linear-gradient(180deg, var(--darker-bg) 0%, var(--dark-bg) 100%) !important;
+            font-family: 'Rajdhani', -apple-system, BlinkMacSystemFont, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            color: #e0e0e0 !important;
+        }
+        
+        .main-content {
+            flex: 1;
+        }
+        
+        /* 导航栏 - 科技风 */
+        .navbar {
+            background: linear-gradient(135deg, rgba(10,10,15,0.95) 0%, rgba(18,18,26,0.95) 100%);
+            border-bottom: 1px solid var(--border-glow);
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.1);
+            backdrop-filter: blur(10px);
+        }
+        
+        .navbar-brand {
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 700;
+            font-size: 1.5rem;
+            color: var(--neon-cyan) !important;
+            text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+            letter-spacing: 2px;
+        }
+        
+        .navbar-brand::before {
+            content: '◈ ';
+            color: var(--neon-pink);
+        }
+        
+        .nav-link {
+            color: #a0a0b0 !important;
+            font-weight: 500;
+            letter-spacing: 1px;
+            transition: all 0.3s;
+            position: relative;
+        }
+        
+        .nav-link:hover {
+            color: var(--neon-cyan) !important;
+            text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
+        }
+        
+        .nav-link::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            width: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-pink));
+            transition: all 0.3s;
+            transform: translateX(-50%);
+        }
+        
+        .nav-link:hover::after {
+            width: 80%;
+        }
+        
+        /* 霓虹按钮 - 科技风导航 */
+        .neon-btn {
+            position: relative;
+            padding: 8px 20px !important;
+            margin: 0 5px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            background: rgba(0, 240, 255, 0.05);
+            transition: all 0.3s ease;
+            overflow: hidden;
+        }
+        
+        .neon-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(0, 240, 255, 0.2), transparent);
+            transition: left 0.5s;
+        }
+        
+        .neon-btn:hover::before {
+            left: 100%;
+        }
+        
+        .neon-btn:hover {
+            border-color: var(--neon-cyan);
+            box-shadow: 
+                0 0 10px rgba(0, 240, 255, 0.3),
+                inset 0 0 10px rgba(0, 240, 255, 0.1);
+            background: rgba(0, 240, 255, 0.1);
+            transform: translateY(-1px);
+        }
+        
+        .neon-icon {
+            display: inline-block;
+            margin-right: 6px;
+            color: var(--neon-pink);
+            text-shadow: 0 0 8px rgba(255, 0, 160, 0.6);
+            transition: all 0.3s;
+        }
+        
+        .neon-btn:hover .neon-icon {
+            color: var(--neon-cyan);
+            text-shadow: 0 0 10px rgba(0, 240, 255, 0.8);
+            transform: rotate(180deg);
+        }
+        
+        /* Hero 区域 */
+        .hero {
+            background: linear-gradient(135deg, rgba(0,0,0,0.8) 0%, rgba(10,10,30,0.9) 100%);
+            border-bottom: 1px solid var(--border-glow);
+            position: relative;
+            overflow: hidden;
+            padding: 80px 0;
+            margin-bottom: 40px;
+        }
+        
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                repeating-linear-gradient(90deg, transparent, transparent 50px, rgba(0, 240, 255, 0.03) 50px, rgba(0, 240, 255, 0.03) 51px),
+                repeating-linear-gradient(0deg, transparent, transparent 50px, rgba(0, 240, 255, 0.03) 50px, rgba(0, 240, 255, 0.03) 51px);
+            pointer-events: none;
+        }
+        
+        .hero h1 {
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 700;
+            font-size: 3rem;
+            color: #fff;
+            text-shadow: 
+                0 0 10px var(--neon-cyan),
+                0 0 20px var(--neon-cyan),
+                0 0 40px var(--neon-cyan);
+            letter-spacing: 4px;
+            position: relative;
+        }
+        
+        .hero h1::after {
+            content: '_';
+            animation: blink 1s infinite;
+            color: var(--neon-pink);
+        }
+        
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+        
+        .hero .lead {
+            color: var(--neon-cyan);
+            font-size: 1.2rem;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+        }
+        
+        /* 卡片 - 科技边框 */
+        .card {
+            background: var(--card-bg);
+            border: 1px solid rgba(0, 240, 255, 0.2);
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s;
+            margin-bottom: 25px;
+        }
+        
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 3px;
+            height: 100%;
+            background: linear-gradient(180deg, var(--neon-cyan), var(--neon-pink));
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        
+        .card:hover {
+            transform: translateY(-3px);
+            border-color: var(--neon-cyan);
+            box-shadow: 
+                0 0 20px rgba(0, 240, 255, 0.2),
+                inset 0 0 20px rgba(0, 240, 255, 0.05);
+        }
+        
+        .card:hover::before {
+            opacity: 1;
+        }
+        
+        .card-title {
+            font-family: 'Orbitron', sans-serif;
+            color: #fff;
+            font-weight: 600;
+        }
+        
+        .card-title a {
+            color: #fff;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+        
+        .card-title a:hover {
+            color: var(--neon-cyan);
+            text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+        }
+        
+        .card-text, .content-text {
+            color: #a0a0b0;
+            line-height: 1.7;
+        }
+        
+        .text-muted {
+            color: #606070 !important;
+            font-size: 0.85rem;
+        }
+        
+        /* 按钮 - 霓虹效果 */
+        .btn-primary {
+            background: transparent;
+            border: 1px solid var(--neon-cyan);
+            color: var(--neon-cyan);
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 500;
+            letter-spacing: 1px;
+            padding: 10px 30px;
+            border-radius: 2px;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(0, 240, 255, 0.3), transparent);
+            transition: left 0.5s;
+        }
+        
+        .btn-primary:hover {
+            background: rgba(0, 240, 255, 0.1);
+            color: #fff;
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.4);
+            border-color: var(--neon-cyan);
+        }
+        
+        .btn-primary:hover::before {
+            left: 100%;
+        }
+        
+        .btn-outline-secondary {
+            background: transparent;
+            border: 1px solid #505060;
+            color: #808090;
+        }
+        
+        .btn-outline-secondary:hover {
+            border-color: var(--neon-pink);
+            color: var(--neon-pink);
+            background: rgba(255, 0, 160, 0.1);
+        }
+        
+        .btn-outline-danger {
+            border-color: #ff4444;
+            color: #ff6666;
+        }
+        
+        .btn-outline-danger:hover {
+            background: rgba(255, 68, 68, 0.2);
+            box-shadow: 0 0 10px rgba(255, 68, 68, 0.4);
+        }
+        
+        /* 表单 */
+        .form-control {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid #404050;
+            color: #fff;
+            border-radius: 2px;
+        }
+        
+        .form-control::placeholder {
+            color: #808090;
+        }
+        
+        .form-control:focus {
+            background: rgba(0, 0, 0, 0.5);
+            border-color: var(--neon-cyan);
+            box-shadow: 0 0 10px rgba(0, 240, 255, 0.2);
+            color: #fff;
+        }
+        
+        .form-label {
+            color: var(--neon-cyan);
+            font-weight: 500;
+            letter-spacing: 1px;
+        }
+        
+        /* 文章详情 */
+        .article-content {
+            color: #c0c0d0;
+            line-height: 1.9;
+            font-size: 1.05rem;
+        }
+        
+        .article-content p {
+            margin-bottom: 1.5rem;
+        }
+        
+        .article-content img {
+            max-width: 100%;
+            border: 1px solid var(--border-glow);
+            border-radius: 4px;
+        }
+        
+        /* Code block styling */
+        .article-content pre {
+            background: #1a1a2e;
+            border: 1px solid #303040;
+            border-radius: 8px;
+            padding: 16px;
+            overflow-x: auto;
+            margin: 16px 0;
+        }
+        
+        .article-content pre code {
+            font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+        
+        .article-content code {
+            font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
+            background: rgba(0, 240, 255, 0.1);
+            color: var(--neon-cyan);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        
+        .back-btn {
+            color: var(--neon-cyan);
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+        
+        .back-btn:hover {
+            color: var(--neon-pink);
+            text-shadow: 0 0 10px rgba(255, 0, 160, 0.5);
+        }
+        
+        /* 页脚 */
+        footer {
+            background: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.8) 100%);
+            border-top: 1px solid var(--border-glow);
+            color: #505060;
+            padding: 30px 0;
+            margin-top: 60px;
+        }
+        
+        footer p {
+            margin: 0;
+            font-family: 'Orbitron', sans-serif;
+            letter-spacing: 1px;
+        }
+        
+        /* Quill 编辑器 - 暗色主题 */
+        .ql-toolbar {
+            background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+            border: 1px solid #303040;
+            border-bottom: 1px solid var(--border-glow);
+            border-radius: 4px 4px 0 0;
+        }
+        
+        .ql-toolbar button {
+            filter: brightness(1.5) !important;
+        }
+        
+        .ql-toolbar button svg {
+            fill: #fff !important;
+            stroke: #fff !important;
+        }
+        
+        .ql-toolbar button:hover svg {
+            fill: var(--neon-cyan) !important;
+            stroke: var(--neon-cyan) !important;
+        }
+        
+        .ql-toolbar .ql-picker-label {
+            color: #fff !important;
+        }
+        
+        .ql-toolbar .ql-picker-options {
+            background: #1a1a2e;
+            border: 1px solid var(--neon-cyan);
+        }
+        
+        .ql-toolbar .ql-picker-item {
+            color: #fff;
+        }
+        
+        .ql-container {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid #303040;
+            border-top: none;
+            border-radius: 0 0 4px 4px;
+            min-height: 300px;
+        }
+        
+        .ql-editor {
+            color: #e0e0e0;
+        }
+        
+        .ql-editor.ql-blank::before {
+            color: #505060;
+        }
+        
+        /* 空状态 */
+        .text-muted a {
+            color: var(--neon-cyan);
+        }
+        
+        /* 滚动条美化 */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: var(--darker-bg);
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: linear-gradient(180deg, var(--neon-cyan), var(--neon-purple));
+            border-radius: 4px;
+        }
+        
+        /* 三栏布局侧边栏 */
+        .sidebar {
+            position: sticky;
+            top: 20px;
+        }
+        
+        .sidebar-card {
+            background: var(--card-bg);
+            border: 1px solid rgba(0, 240, 255, 0.2);
+            border-radius: 4px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+        
+        .sidebar-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: linear-gradient(90deg, var(--neon-cyan), var(--neon-pink));
+        }
+        
+        .sidebar-card .card-header {
+            background: linear-gradient(135deg, rgba(0, 240, 255, 0.1) 0%, rgba(184, 41, 221, 0.1) 100%);
+            border-bottom: 1px solid rgba(0, 240, 255, 0.2);
+            padding: 12px 15px;
+            font-family: 'Orbitron', sans-serif;
+            color: var(--neon-cyan);
+            font-size: 0.9rem;
+            letter-spacing: 1px;
+        }
+        
+        .sidebar-card .card-body {
+            padding: 15px;
+        }
+        
+        .sidebar-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        
+        .sidebar-list li {
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .sidebar-list li:last-child {
+            border-bottom: none;
+        }
+        
+        .sidebar-list a {
+            color: #a0a0b0;
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: all 0.3s;
+            display: block;
+        }
+        
+        .sidebar-list a:hover {
+            color: var(--neon-cyan);
+            padding-left: 5px;
+        }
+        
+        .sidebar-list .time {
+            font-size: 0.75rem;
+            color: #505060;
+            display: block;
+            margin-top: 2px;
+        }
+        
+        /* 统计数字 */
+        .stat-item {
+            text-align: center;
+            padding: 10px;
+        }
+        
+        .stat-number {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 1.8rem;
+            color: var(--neon-cyan);
+            text-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
+        }
+        
+        .stat-label {
+            font-size: 0.75rem;
+            color: #606070;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        /* 日历样式 */
+        .calendar {
+            width: 100%;
+        }
+        
+        .calendar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding: 0 5px;
+        }
+        
+        .calendar-header button {
+            background: transparent;
+            border: 1px solid var(--neon-cyan);
+            color: var(--neon-cyan);
+            padding: 2px 8px;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: 0.8rem;
+        }
+        
+        .calendar-header span {
+            color: var(--neon-cyan);
+            font-family: 'Orbitron', sans-serif;
+            font-size: 0.9rem;
+        }
+        
+        .calendar-table {
+            width: 100%;
+            text-align: center;
+            font-size: 0.8rem;
+        }
+        
+        .calendar-table th {
+            color: var(--neon-pink);
+            padding: 5px;
+            font-weight: 500;
+        }
+        
+        .calendar-table td {
+            padding: 5px;
+            color: #a0a0b0;
+            cursor: pointer;
+            border-radius: 2px;
+            transition: all 0.3s;
+        }
+        
+        .calendar-table td:hover {
+            background: rgba(0, 240, 255, 0.2);
+            color: var(--neon-cyan);
+        }
+        
+        .calendar-table td.today {
+            background: var(--neon-cyan);
+            color: #000;
+            font-weight: bold;
+        }
+        
+        .calendar-table td.has-post {
+            border-bottom: 2px solid var(--neon-pink);
+        }
+        
+        /* 名言 */
+        .quote-text {
+            font-style: italic;
+            color: #c0c0d0;
+            font-size: 0.9rem;
+            line-height: 1.6;
+            border-left: 2px solid var(--neon-cyan);
+            padding-left: 12px;
+            margin-bottom: 10px;
+        }
+        
+        .quote-author {
+            text-align: right;
+            color: var(--neon-pink);
+            font-size: 0.8rem;
+        }
+        
+        /* 风水 */
+        .fengshui-item {
+            display: flex;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .fengshui-item:last-child {
+            border-bottom: none;
+        }
+        
+        .fengshui-icon {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 10px;
+            font-size: 0.8rem;
+        }
+        
+        .fengshui-icon.good {
+            background: rgba(0, 255, 136, 0.2);
+            color: #00ff88;
+        }
+        
+        .fengshui-icon.bad {
+            background: rgba(255, 68, 68, 0.2);
+            color: #ff4444;
+        }
+        
+        .fengshui-text {
+            color: #a0a0b0;
+            font-size: 0.85rem;
+        }
+        
+        /* 日历增强样式 */
+        .calendar-table td {
+            position: relative;
+            height: 50px;
+            vertical-align: top;
+            padding: 3px !important;
+        }
+        
+        .calendar-table td .day-num {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #e0e0e0;
+        }
+        
+        .calendar-table td .day-lunar {
+            font-size: 0.65rem;
+            color: #808090;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+        
+        .calendar-table td.today {
+            background: linear-gradient(135deg, var(--neon-cyan), var(--neon-blue)) !important;
+        }
+        
+        .calendar-table td.today .day-num {
+            color: #000 !important;
+        }
+        
+        .calendar-table td.today .day-lunar {
+            color: #333 !important;
+        }
+        
+        .calendar-table td.selected {
+            border: 2px solid var(--neon-pink) !important;
+            box-shadow: 0 0 10px rgba(255, 0, 160, 0.4);
+        }
+        
+        .calendar-table td:hover {
+            background: rgba(0, 240, 255, 0.15);
+            cursor: pointer;
+        }
+        
+        .calendar-info {
+            margin-top: 15px;
+            padding: 10px;
+            background: rgba(0, 240, 255, 0.05);
+            border: 1px solid rgba(0, 240, 255, 0.2);
+            border-radius: 4px;
+            text-align: center;
+        }
+        
+        .calendar-info .selected-date {
+            color: var(--neon-cyan);
+            font-family: 'Orbitron', sans-serif;
+            font-size: 0.9rem;
+        }
+        
+        .calendar-info .lunar-info {
+            color: #808090;
+            font-size: 0.8rem;
+            margin-top: 5px;
+        }
+        
+        .calendar-info .festival {
+            color: var(--neon-pink);
+            font-size: 0.85rem;
+            margin-top: 3px;
+        }
+        
+        /* 响应式 */
+        @media (max-width: 991px) {
+            .sidebar {
+                position: relative;
+                top: 0;
+                margin-top: 30px;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2rem;
+            }
+        }
+        
+        /* 打字机效果 */
+        .typewriter-title {
+            font-family: 'Orbitron', monospace;
+        }
+        .typewriter-cursor {
+            animation: blink 1s infinite;
+            color: var(--neon-cyan);
+        }
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+        
+        /* 文章卡片悬停特效 */
+        .post-card {
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        .post-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0, 240, 255, 0.2);
+        }
+        .post-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
+            animation: scanline 3s linear infinite;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .post-card:hover::before {
+            opacity: 1;
+        }
+        @keyframes scanline {
+            0% { left: -100%; }
+            100% { left: 100%; }
+        }
+        .post-card:hover .card-title {
+            animation: glitch-anim 0.3s ease;
+        }
+        @keyframes glitch-anim {
+            0% { transform: translate(0); }
+            20% { transform: translate(-2px, 2px); }
+            40% { transform: translate(-2px, -2px); }
+            60% { transform: translate(2px, 2px); }
+            80% { transform: translate(2px, -2px); }
+            100% { transform: translate(0); }
+        }
+    </style>
+    <script>
+    // 打字机效果
+    document.addEventListener('DOMContentLoaded', function() {
+        var typewriterElements = document.querySelectorAll('.typewriter-title');
+        typewriterElements.forEach(function(el) {
+            var text = el.getAttribute('data-text');
+            var textSpan = el.querySelector('.typewriter-text');
+            var cursor = el.querySelector('.typewriter-cursor');
+            if (text && textSpan) {
+                var i = 0;
+                var typeInterval = setInterval(function() {
+                    if (i < text.length) {
+                        textSpan.textContent += text.charAt(i);
+                        i++;
+                    } else {
+                        clearInterval(typeInterval);
+                        setTimeout(function() {
+                            if (cursor) cursor.style.display = 'none';
+                        }, 2000);
+                    }
+                }, 100);
+            }
+        });
+    });
+    
+    // 日历交互函数 - 无刷新切换
+    let currentYear = new Date().getFullYear();
+    let currentMonth = new Date().getMonth() + 1;
+    
+    function changeMonth(year, month, delta) {
+        month += delta;
+        if (month > 12) {
+            year++;
+            month = 1;
+        } else if (month < 1) {
+            year--;
+            month = 12;
+        }
+        currentYear = year;
+        currentMonth = month;
+        loadCalendar(year, month);
+    }
+    
+    function selectDate(year, month, day) {
+        // 只高亮选中的日期，不刷新页面
+        document.querySelectorAll('.calendar-table td').forEach(td => {
+            td.classList.remove('selected');
+        });
+        event.currentTarget.classList.add('selected');
+    }
+    
+    function loadCalendar(year, month) {
+        fetch('/api/calendar?year=' + year + '&month=' + month)
+            .then(res => res.text())
+            .then(html => {
+                document.getElementById('calendar').outerHTML = html;
+            });
+    }
+    </script>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg">
+        <div class="container">
+            <a class="navbar-brand" href="/">NEURAL.LOG</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" style="border-color: var(--neon-cyan);">
+                <span class="navbar-toggler-icon" style="filter: invert(1);"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link neon-btn" href="/">
+                            <span class="neon-icon">◈</span> 首页
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link neon-btn" href="/new">
+                            <span class="neon-icon">✦</span> 写入
+                        </a>
+                    </li>
+                </ul>
+                <form class="d-flex me-3" action="/search" method="GET">
+                    <input class="form-control form-control-sm" type="search" name="q" placeholder="搜索..." aria-label="Search" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-glow); color: #fff; width: 150px;">
+                    <button class="btn btn-sm btn-outline-primary ms-2" type="submit" style="border-color: var(--neon-cyan); color: var(--neon-cyan); padding: 0.25rem 0.5rem;">🔍</button>
+                </form>
+                <ul class="navbar-nav">
+                    <li class="nav-item">
+                        {login_nav}
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <div class="main-content">
+    {content}
+    </div>
+
+    <footer>
+        <div class="container">
+            <div class="d-flex justify-content-between align-items-center">
+                <p class="mb-0">&copy; {year} // NEURAL.LOG // SYSTEM.ONLINE</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
+</body>
+</html>'''
+
+def render_page(content, title='博客', extra_js=''):
+    current_year = datetime.now().year
+    
+    # 生成登录导航
+    if current_user.is_authenticated:
+        login_nav = f'''<a class="nav-link neon-btn" href="/logout">
+            <span class="neon-icon">◉</span> 退出
+        </a>'''
+    else:
+        login_nav = f'''<a class="nav-link neon-btn" href="/login">
+            <span class="neon-icon">◉</span> 登录
+        </a>'''
+    
+    # 在</body>前插入自定义JS
+    html = BASE_HTML.replace('{title}', title).replace('{content}', content).replace('{year}', str(current_year)).replace('{login_nav}', login_nav)
+    
+    # 添加 highlight.js 初始化（放在所有JS之后）
+    highlight_js = '''<script>
+        // Initialize highlight.js for code blocks
+        if (typeof hljs !== 'undefined') {
+            hljs.highlightAll();
+        }
+    </script>'''
+    
+    if extra_js:
+        html = html.replace('</body>', extra_js + highlight_js + '</body>')
+    else:
+        html = html.replace('</body>', highlight_js + '</body>')
+    return html
+
+@app.route('/api/calendar')
+def api_calendar():
+    """获取日历HTML（AJAX接口）"""
+    year = request.args.get('year', type=int, default=datetime.now().year)
+    month = request.args.get('month', type=int, default=datetime.now().month)
+    return generate_calendar(year, month)
+
+@app.route('/')
+def index():
+    # 获取侧边栏数据（使用当天日期，不随日历切换改变）
+    sidebar = get_sidebar_data()
+    
+    # 获取文章列表
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT id, title, LEFT(content, 300) as content, author, created_at FROM posts ORDER BY created_at DESC')
+    posts = cursor.fetchall()
+    db.close()
+    
+    # 生成左侧边栏
+    left_sidebar = f'''
+    <div class="sidebar">
+        <!-- 文章目录 -->
+        <div class="sidebar-card">
+            <div class="card-header">◈ 文章目录</div>
+            <div class="card-body">
+                <ul class="sidebar-list">
+                    {''.join('<li><a href="/post/{}">{}</a></li>'.format(p['id'], p['title'][:20] + ("..." if len(p['title']) > 20 else "")) for p in sidebar['all_posts'][:10])}
+                </ul>
+            </div>
+        </div>
+        
+        <!-- 最近更新 -->
+        <div class="sidebar-card">
+            <div class="card-header">◈ 最近更新</div>
+            <div class="card-body">
+                <ul class="sidebar-list">
+                    {''.join('<li><a href="/post/{}">{}<span class="time">{}</span></a></li>'.format(p['id'], p['title'][:18] + ("..." if len(p['title']) > 18 else ""), p['created_at'].strftime('%m-%d %H:%M')) for p in sidebar['recent_posts'])}
+                </ul>
+            </div>
+        </div>
+        
+        <!-- 数据统计 -->
+        <div class="sidebar-card">
+            <div class="card-header">◈ 数据统计</div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-4 stat-item">
+                        <div class="stat-number">{sidebar['stats']['total']}</div>
+                        <div class="stat-label">总文章</div>
+                    </div>
+                    <div class="col-4 stat-item">
+                        <div class="stat-number">{sidebar['stats']['week']}</div>
+                        <div class="stat-label">本周</div>
+                    </div>
+                    <div class="col-4 stat-item">
+                        <div class="stat-number">{sidebar['stats']['month']}</div>
+                        <div class="stat-label">本月</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>'''
+    
+    # 生成右侧边栏
+    quote_text, quote_author = sidebar['quote']
+    fengshui = sidebar['fengshui']
+    right_sidebar = f'''
+    <div class="sidebar">
+        <!-- 日历 -->
+        <div class="sidebar-card">
+            <div class="card-header">◈ 系统日历</div>
+            <div class="card-body">
+                {sidebar['calendar']}
+            </div>
+        </div>
+        
+        <!-- 每日名言 -->
+        <div class="sidebar-card">
+            <div class="card-header">◈ 每日名言</div>
+            <div class="card-body">
+                <div class="quote-text">"{quote_text}"</div>
+                <div class="quote-author">— {quote_author}</div>
+            </div>
+        </div>
+        
+        <!-- 今日风水 -->
+        <div class="sidebar-card">
+            <div class="card-header">◈ 今日宜忌</div>
+            <div class="card-body">
+                {''.join(f'<div class="fengshui-item"><span class="fengshui-icon good">宜</span><span class="fengshui-text">{item}</span></div>' for item in fengshui['yi'])}
+                {''.join(f'<div class="fengshui-item"><span class="fengshui-icon bad">忌</span><span class="fengshui-text">{item}</span></div>' for item in fengshui['ji'])}
+            </div>
+        </div>
+    </div>'''
+    
+    # 生成中间内容
+    if not posts:
+        center_content = '''
+        <div class="text-center py-5">
+            <div style="font-size: 3rem; margin-bottom: 20px;">📝</div>
+            <h3 class="mt-3" style="color: #a0a0b0;">还没有文章</h3>
+            <p style="color: #606070;">开始<a href="/new" style="color: var(--neon-cyan);">写第一篇博客</a>吧</p>
+        </div>'''
+    else:
+        cards = ''
+        for p in posts:
+            plain_text = re.sub(r'<[^>]+>', '', p['content'])
+            preview = plain_text[:200] + ('...' if len(plain_text) > 200 else '')
+            cards += f'''
+            <div class="card mb-4 post-card">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        <a href="/post/{p['id']}">{p['title']}</a>
+                    </h5>
+                    <p class="text-muted mb-2">
+                        👤 {p['author']} &nbsp;|&nbsp; 📅 {p['created_at'].strftime('%Y-%m-%d')}
+                    </p>
+                    <p class="card-text content-text">{preview}</p>
+                </div>
+                <div class="card-footer bg-transparent border-0 pt-0 pb-3 px-4">
+                    <a href="/post/{p['id']}" class="btn btn-sm btn-primary">阅读全文 →</a>
+                </div>
+            </div>'''
+        center_content = cards
+    
+    # 三栏布局
+    content = f'''
+    <div class="hero">
+        <div class="container text-center">
+            <h1>💻 技术备忘录</h1>
+            <p class="lead">后端开发的日常记录与思考</p>
+        </div>
+    </div>
+    <div class="container-fluid px-4">
+        <div class="row">
+            <div class="col-lg-3">{left_sidebar}</div>
+            <div class="col-lg-6">{center_content}</div>
+            <div class="col-lg-3">{right_sidebar}</div>
+        </div>
+    </div>'''
+    
+    return render_page(content, '首页')
+
+@app.route('/post/<int:post_id>')
+def post(post_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM posts WHERE id = %s', (post_id,))
+    post = cursor.fetchone()
+    
+    # 获取更新记录
+    cursor.execute('SELECT * FROM post_updates WHERE post_id = %s ORDER BY created_at ASC', (post_id,))
+    updates = cursor.fetchall()
+    db.close()
+    
+    if not post:
+        return render_page('''
+        <div class="container py-5 text-center">
+            ⚠️
+            <h3 class="mt-3">文章不存在</h3>
+            <a href="/" class="btn btn-primary mt-3">返回首页</a>
+        </div>''', '404'), 404
+    
+    # 构建更新记录HTML
+    updates_html = ''
+    if updates:
+        updates_html = '<div class="updates-section mt-5">'
+        updates_html += '<h3 style="color: var(--neon-cyan); font-family: Orbitron; margin-bottom: 20px;">◈ 更新记录</h3>'
+        for i, update in enumerate(updates, 1):
+            updates_html += f'''
+            <div class="update-item" style="margin-bottom: 30px; padding: 20px; background: rgba(0,0,0,0.2); border-left: 3px solid var(--neon-pink); border-radius: 0 4px 4px 0;">
+                <div class="update-header" style="color: var(--neon-pink); font-size: 0.85rem; margin-bottom: 10px;">
+                    📌 第{i}次更新 &nbsp;|&nbsp; {update['created_at'].strftime('%Y-%m-%d %H:%M:%S')}
+                </div>
+                <div class="update-content article-content">{update['content']}</div>
+            </div>'''
+        updates_html += '</div>'
+    
+    content = f'''
+    <div class="container py-4">
+        <a href="/" class="back-btn">← 返回首页</a>
+        <div class="card mt-3">
+            <div class="card-body p-5">
+                <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                        <h1 class="mb-3 typewriter-title" data-text="{post['title']}"><span class="typewriter-text"></span><span class="typewriter-cursor">█</span></h1>
+                        <p class="text-muted mb-4">
+                            👤 {post['author']} &nbsp;&nbsp;
+                            ⏰ {post['created_at'].strftime('%Y-%m-%d %H:%M:%S')}
+                        </p>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <a href="/append/{post['id']}" class="btn btn-outline-primary btn-sm" style="border-color: var(--neon-cyan); color: var(--neon-cyan);">➕ 追加更新</a>
+                        <form method="POST" action="/delete/{post['id']}" onsubmit="return confirm('确定要删除这篇文章吗？此操作不可恢复！')" style="display: inline;">
+                            <button type="submit" class="btn btn-outline-danger btn-sm">🗑️ 删除</button>
+                        </form>
+                    </div>
+                </div>
+                <hr>
+                <div class="article-content mt-4">{post['content']}</div>
+                {updates_html}
+            </div>
+        </div>
+    </div>'''
+    return render_page(content, post['title'])
+
+@app.route('/upload', methods=['POST'])
+def upload_image():
+    """处理图片上传（包括粘贴的图片）"""
+    # 处理 base64 粘贴的图片
+    if request.json and 'image' in request.json:
+        image_data = request.json['image']
+        # data:image/png;base64,xxxxx
+        match = re.match(r'data:image/(\w+);base64,(.+)', image_data)
+        if match:
+            ext = match.group(1)
+            data = match.group(2)
+            filename = f"paste_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            with open(filepath, 'wb') as f:
+                f.write(base64.b64decode(data))
+            return {'url': f'/static/uploads/{filename}'}
+    
+    # 处理文件上传
+    if 'file' in request.files:
+        file = request.files['file']
+        if file and allowed_file(file.filename):
+            filename = secure_filename(f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}")
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(filepath)
+            return {'url': f'/static/uploads/{filename}'}
+    
+    return {'error': '上传失败'}, 400
+
+@app.route('/delete/<int:post_id>', methods=['POST'])
+@login_required
+def delete_post(post_id):
+    """删除文章"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('DELETE FROM posts WHERE id = %s', (post_id,))
+    db.commit()
+    deleted = cursor.rowcount
+    db.close()
+    
+    if deleted:
+        flash('文章已删除')
+    else:
+        flash('文章不存在')
+    return redirect(url_for('index'))
+
+@app.route('/search')
+def search():
+    """搜索文章"""
+    query = request.args.get('q', '').strip()
+    
+    if not query:
+        return redirect(url_for('index'))
+    
+    db = get_db()
+    cursor = db.cursor()
+    # 搜索标题和内容
+    cursor.execute('''
+        SELECT id, title, LEFT(content, 300) as content, author, created_at 
+        FROM posts 
+        WHERE title LIKE %s OR content LIKE %s 
+        ORDER BY created_at DESC
+    ''', (f'%{query}%', f'%{query}%'))
+    posts = cursor.fetchall()
+    db.close()
+    
+    # 生成搜索结果页面
+    if not posts:
+        content = f'''
+        <div class="container py-5">
+            <h2 style="color: var(--neon-cyan);">🔍 搜索结果: "{query}"</h2>
+            <p class="text-muted mt-3">没有找到相关文章</p>
+            <a href="/" class="btn btn-primary mt-3">返回首页</a>
+        </div>'''
+    else:
+        cards = ''
+        for p in posts:
+            plain_text = re.sub(r'<[^>]+>', '', p['content'])
+            preview = plain_text[:200] + ('...' if len(plain_text) > 200 else '')
+            # 高亮搜索关键词
+            highlighted_title = p['title'].replace(query, f'<mark style="background: var(--neon-cyan); color: #000;">{query}</mark>')
+            cards += f'''
+            <div class="card mb-4">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        <a href="/post/{p['id']}">{highlighted_title}</a>
+                    </h5>
+                    <p class="text-muted mb-2">
+                        👤 {p['author']} &nbsp;|&nbsp; 📅 {p['created_at'].strftime('%Y-%m-%d')}
+                    </p>
+                    <p class="card-text content-text">{preview}</p>
+                </div>
+                <div class="card-footer bg-transparent border-0 pt-0 pb-3 px-4">
+                    <a href="/post/{p['id']}" class="btn btn-sm btn-primary">阅读全文 →</a>
+                </div>
+            </div>'''
+        
+        content = f'''
+        <div class="container py-4">
+            <h2 style="color: var(--neon-cyan); margin-bottom: 30px;">🔍 搜索结果: "{query}" <small style="color: #808090; font-size: 0.6em;">({len(posts)} 篇)</small></h2>
+            {cards}
+        </div>'''
+    
+    return render_page(content, f'搜索: {query}')
+
+@app.route('/append/<int:post_id>', methods=['GET', 'POST'])
+@login_required
+def append_post(post_id):
+    """追加更新文章"""
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute('SELECT * FROM posts WHERE id = %s', (post_id,))
+    post = cursor.fetchone()
+    db.close()
+    
+    if not post:
+        flash('文章不存在')
+        return redirect(url_for('index'))
+    
+    if request.method == 'POST':
+        content = request.form['content'].strip()
+        
+        if not content:
+            flash('更新内容不能为空')
+        else:
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute('INSERT INTO post_updates (post_id, content) VALUES (%s, %s)', (post_id, content))
+            db.commit()
+            db.close()
+            flash('更新已追加！')
+            return redirect(url_for('post', post_id=post_id))
+    
+    # 显示原文（只读）
+    content = f'''
+    <div class="container py-4">
+        <a href="/post/{post_id}" class="back-btn">← 返回文章</a>
+        <div class="card mt-3">
+            <div class="card-body p-5">
+                <h2 class="mb-4" style="color: var(--neon-cyan);">➕ 追加更新</h2>
+                
+                <!-- 原文展示（只读） -->
+                <div class="mb-4" style="padding: 20px; background: rgba(0,0,0,0.3); border-radius: 4px; border: 1px solid #303040;">
+                    <h4 style="color: #808090; margin-bottom: 15px;">原文内容（只读）</h4>
+                    <div style="color: #606060; max-height: 200px; overflow-y: auto;">
+                        {post['content'][:500]}{"..." if len(post['content']) > 500 else ""}
+                    </div>
+                </div>
+                
+                <form method="POST" id="appendForm">
+                    <div class="mb-3">
+                        <label class="form-label">追加内容（支持直接粘贴图片）</label>
+                        <div id="editor" style="min-height: 300px; background: white;"></div>
+                        <textarea name="content" id="content" style="display:none;"></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary" id="submitBtn">
+                        🚀 追加更新
+                    </button>
+                    <a href="/post/{post_id}" class="btn btn-outline-secondary ms-2">取消</a>
+                </form>
+            </div>
+        </div>
+    </div>'''
+    
+    # JS代码作为extra_js传入，确保在Quill库加载后执行
+    extra_js = '''<script>
+    // 初始化追加页面
+    console.log('Append page JS starting...');
+    
+    function initAppendPage() {
+        console.log('initAppendPage called, Quill status:', typeof Quill);
+        
+        if (typeof Quill === 'undefined') {
+            console.log('Quill not loaded yet, retrying in 100ms...');
+            setTimeout(initAppendPage, 100);
+            return;
+        }
+        
+        console.log('Quill is ready, initializing editor...');
+        
+        // 获取DOM元素
+        var editorEl = document.getElementById('editor');
+        var contentEl = document.getElementById('content');
+        var formEl = document.getElementById('appendForm');
+        var submitBtnEl = document.getElementById('submitBtn');
+        
+        console.log('DOM elements:', {editor: !!editorEl, content: !!contentEl, form: !!formEl, submitBtn: !!submitBtnEl});
+        
+        if (!editorEl) {
+            console.error('Editor element not found!');
+            return;
+        }
+        
+        // 初始化Quill编辑器
+        try {
+            var quill = new Quill('#editor', {
+                theme: 'snow',
+                placeholder: '在这里写下追加内容...支持直接粘贴图片！',
+                modules: {
+                    toolbar: [
+                        ['bold', 'italic', 'underline', 'strike'],
+                        ['blockquote', 'code-block'],
+                        [{'header': 1}, {'header': 2}],
+                        [{'list': 'ordered'}, {'list': 'bullet'}],
+                        [{'indent': '-1'}, {'indent': '+1'}],
+                        ['link', 'image'],
+                        ['clean']
+                    ]
+                }
+            });
+            console.log('Quill editor initialized successfully');
+        } catch (err) {
+            console.error('Failed to initialize Quill:', err);
+            return;
+        }
+        
+        // 图片上传处理
+        quill.getModule('toolbar').addHandler('image', function() {
+            var input = document.createElement('input');
+            input.setAttribute('type', 'file');
+            input.setAttribute('accept', 'image/*');
+            input.click();
+            input.onchange = function() {
+                var file = input.files[0];
+                if (file) {
+                    var formData = new FormData();
+                    formData.append('file', file);
+                    fetch('/upload', {
+                        method: 'POST',
+                        body: formData
+                    }).then(res => res.json()).then(data => {
+                        if (data.url) {
+                            var range = quill.getSelection();
+                            quill.insertEmbed(range ? range.index : 0, 'image', data.url);
+                        }
+                    });
+                }
+            };
+        });
+        
+        // 粘贴图片处理
+        quill.root.addEventListener('paste', function(e) {
+            var items = e.clipboardData.items;
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].type.indexOf('image') !== -1) {
+                    e.preventDefault();
+                    var blob = items[i].getAsFile();
+                    var reader = new FileReader();
+                    reader.onload = function(event) {
+                        fetch('/upload', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({image: event.target.result})
+                        }).then(res => res.json()).then(data => {
+                            if (data.url) {
+                                var range = quill.getSelection();
+                                quill.insertEmbed(range ? range.index : 0, 'image', data.url);
+                            }
+                        });
+                    };
+                    reader.readAsDataURL(blob);
+                    break;
+                }
+            }
+        });
+        
+        // 表单提交处理 - 使用onsubmit属性方式
+        if (formEl && submitBtnEl && contentEl) {
+            formEl.onsubmit = function(e) {
+                console.log('Form onsubmit triggered!');
+                var html = quill.root.innerHTML;
+                contentEl.value = html;
+                submitBtnEl.disabled = true;
+                submitBtnEl.innerHTML = '⏳ 提交中...';
+                console.log('Form submitting with content length:', html.length);
+                // 返回true让表单正常提交
+                return true;
+            };
+            console.log('Form submit handler attached via onsubmit');
+        } else {
+            console.error('Required elements not found:', {form: !!formEl, submitBtn: !!submitBtnEl, content: !!contentEl});
+        }
+    }
+    
+    // 启动初始化
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initAppendPage);
+    } else {
+        initAppendPage();
+    }
+    </script>'''
+    return render_page(content, '追加更新', extra_js)
+
+@app.route('/new', methods=['GET', 'POST'])
+@login_required
+def new_post():
+    if request.method == 'POST':
+        title = request.form['title'].strip()
+        content = request.form['content'].strip()
+        
+        if not title or not content:
+            flash('标题和内容不能为空')
+        else:
+            db = get_db()
+            cursor = db.cursor()
+            cursor.execute('INSERT INTO posts (title, content) VALUES (%s, %s)', (title, content))
+            post_id = cursor.lastrowid
+            db.commit()
+            db.close()
+            # 返回代码雨特效页面
+            success_js = '''
+            <div id="matrix-rain" style="position:fixed;top:0;left:0;width:100%;height:100%;background:#000;z-index:9999;display:flex;flex-direction:column;justify-content:center;align-items:center;font-family:'Orbitron',monospace;">
+                <canvas id="matrix-canvas" style="position:absolute;top:0;left:0;"></canvas>
+                <div id="upload-text" style="color:#0f0;font-size:2rem;z-index:10000;opacity:0;text-shadow:0 0 20px #0f0;letter-spacing:3px;">UPLOAD COMPLETE</div>
+            </div>
+            <script>
+            (function(){
+                var canvas = document.getElementById('matrix-canvas');
+                var ctx = canvas.getContext('2d');
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+                var chars = '01アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン';
+                var drops = [];
+                var fontSize = 14;
+                var columns = canvas.width / fontSize;
+                for(var i = 0; i < columns; i++) drops[i] = Math.random() * -100;
+                
+                function draw() {
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = '#0f0';
+                    ctx.font = fontSize + 'px monospace';
+                    for(var i = 0; i < drops.length; i++) {
+                        var text = chars[Math.floor(Math.random() * chars.length)];
+                        ctx.fillText(text, i * fontSize, drops[i] * fontSize);
+                        if(drops[i] * fontSize > canvas.height && Math.random() > 0.975) drops[i] = 0;
+                        drops[i]++;
+                    }
+                }
+                
+                var interval = setInterval(draw, 35);
+                
+                setTimeout(function() {
+                    document.getElementById('upload-text').style.transition = 'opacity 0.5s';
+                    document.getElementById('upload-text').style.opacity = '1';
+                }, 1500);
+                
+                setTimeout(function() {
+                    clearInterval(interval);
+                    window.location.href = '/post/''' + str(post_id) + '''';
+                }, 3000);
+            })();
+            </script>
+            '''
+            return success_js
+    
+    # 写博客页面 - JS放在页面底部，在Quill库加载后执行
+    editor_js = '''
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        var quill = new Quill('#editor', {
+            theme: 'snow',
+            placeholder: '在这里写下你的文章...支持直接粘贴图片！',
+            modules: {
+                toolbar: {
+                    container: [
+                        ['bold', 'italic', 'underline', 'strike'],
+                        ['blockquote', 'code-block'],
+                        [{'header': 1}, {'header': 2}],
+                        [{'list': 'ordered'}, {'list': 'bullet'}],
+                        [{'indent': '-1'}, {'indent': '+1'}],
+                        ['link', 'image'],
+                        ['clean']
+                    ],
+                    handlers: {
+                        image: function() {
+                            var input = document.createElement('input');
+                            input.setAttribute('type', 'file');
+                            input.setAttribute('accept', 'image/*');
+                            input.click();
+                            input.onchange = function() {
+                                var file = input.files[0];
+                                if (file) {
+                                    var formData = new FormData();
+                                    formData.append('file', file);
+                                    fetch('/upload', {
+                                        method: 'POST',
+                                        body: formData
+                                    }).then(res => res.json()).then(data => {
+                                        if (data.url) {
+                                            var range = quill.getSelection();
+                                            quill.insertEmbed(range ? range.index : 0, 'image', data.url);
+                                        }
+                                    });
+                                }
+                            };
+                        }
+                    }
+                }
+            }
+        });
+        
+        // 粘贴图片处理
+        quill.root.addEventListener('paste', function(e) {
+            var items = e.clipboardData.items;
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].type.indexOf('image') !== -1) {
+                    e.preventDefault();
+                    var blob = items[i].getAsFile();
+                    var reader = new FileReader();
+                    reader.onload = function(event) {
+                        fetch('/upload', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({image: event.target.result})
+                        }).then(res => res.json()).then(data => {
+                            if (data.url) {
+                                var range = quill.getSelection();
+                                quill.insertEmbed(range ? range.index : 0, 'image', data.url);
+                            }
+                        });
+                    };
+                    reader.readAsDataURL(blob);
+                    break;
+                }
+            }
+        });
+        
+        document.getElementById('postForm').onsubmit = function() {
+            var html = quill.root.innerHTML;
+            // 检查是否有实际内容（文本或图片）
+            var hasText = quill.getText().trim().length > 0;
+            var hasImage = html.includes('<img');
+            if (!hasText && !hasImage) {
+                alert('请输入内容');
+                return false;
+            }
+            document.getElementById('content').value = html;
+            return true;
+        };
+    });
+    </script>'''
+    
+    content = f'''
+    <div class="container py-4">
+        <div class="card">
+            <div class="card-body p-5">
+                <h2 class="mb-4" style="color: var(--neon-cyan); text-shadow: 0 0 10px rgba(0, 240, 255, 0.3);">✏️ 写博客</h2>
+                <form method="POST" id="postForm">
+                    <div class="mb-3">
+                        <label class="form-label">标题</label>
+                        <input type="text" name="title" class="form-control" required placeholder="输入文章标题">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">内容（支持直接粘贴图片）</label>
+                        <div id="editor" style="min-height: 300px; background: white;"></div>
+                        <textarea name="content" id="content" style="display:none;"></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        🚀 发布
+                    </button>
+                    <a href="/" class="btn btn-outline-secondary ms-2">取消</a>
+                </form>
+            </div>
+        </div>
+    </div>
+    {editor_js}'''
+    return render_page(content, '写博客')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('index'))
+    
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '').strip()
+        remember = request.form.get('remember') == 'on'
+        
+        if username == ADMIN_USERNAME and check_password_hash(ADMIN_PASSWORD_HASH, password):
+            user = User(id='1')
+            login_user(user, remember=remember)
+            flash('登录成功！', 'success')
+            next_page = request.args.get('next')
+            return redirect(next_page if next_page else url_for('index'))
+        else:
+            flash('用户名或密码错误', 'danger')
+    
+    content = '''
+    <div class="row justify-content-center">
+        <div class="col-md-4">
+            <div class="card" style="background: rgba(0,0,0,0.7); border: 1px solid var(--neon-cyan);">
+                <div class="card-body">
+                    <h3 class="card-title text-center mb-4" style="color: var(--neon-cyan);">🔐 登录</h3>
+                    <form method="POST">
+                        <div class="mb-3">
+                            <label class="form-label" style="color: #fff;">用户名</label>
+                            <input type="text" name="username" class="form-control" required 
+                                   style="background: rgba(0,0,0,0.5); border: 1px solid var(--neon-cyan); color: #fff;">
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label" style="color: #fff;">密码</label>
+                            <input type="password" name="password" class="form-control" required
+                                   style="background: rgba(0,0,0,0.5); border: 1px solid var(--neon-cyan); color: #fff;">
+                        </div>
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" name="remember" class="form-check-input" id="remember">
+                            <label class="form-check-label" for="remember" style="color: #ccc;">记住我</label>
+                        </div>
+                        <button type="submit" class="btn w-100" 
+                                style="background: linear-gradient(45deg, var(--neon-cyan), var(--neon-purple)); color: #000; font-weight: bold;">
+                            登录
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>'''
+    return render_page(content, '登录')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    flash('已退出登录', 'info')
+    return redirect(url_for('index'))
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=False)
