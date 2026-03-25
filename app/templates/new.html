@@ -24,8 +24,7 @@
                         
                         <div class="mb-3">
                             <label class="form-label">内容</label>
-                            <div id="editor-container" style="height: 400px; background: rgba(0,0,0,0.3);"></div>
-                            <textarea name="content" id="content" style="display: none;"></textarea>
+                            <textarea name="content" id="content" class="form-control" rows="10" required placeholder="输入文章内容..."></textarea>
                         </div>
                         
                         <div class="d-flex gap-2">
@@ -41,27 +40,14 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://cdn.tiny.cloud/1/no-api-key/tinymce/6/tinymce.min.js" referrerpolicy="origin"></script>
 <script>
-    // 初始化 Quill 编辑器
-    var quill = new Quill('#editor-container', {
-        theme: 'snow',
-        placeholder: '开始写作...',
-        modules: {
-            toolbar: [
-                [{ 'header': [1, 2, 3, false] }],
-                ['bold', 'italic', 'underline', 'strike'],
-                ['blockquote', 'code-block'],
-                [{ 'list': 'ordered'}, { 'list': 'bullet' }],
-                [{ 'indent': '-1'}, { 'indent': '+1' }],
-                ['link', 'image'],
-                ['clean']
-            ]
-        }
+    tinymce.init({
+        selector: '#content',
+        plugins: 'anchor autolink charmap codesample emoticons image link lists media searchreplace table visualblocks wordcount',
+        toolbar: 'undo redo | blocks fontfamily fontsize | bold italic underline strikethrough | link image media table | align lineheight | numlist bullist indent outdent | emoticons charmap | removeformat',
+        height: 400,
+        placeholder: '开始写作...'
     });
-    
-    // 表单提交前同步内容
-    document.querySelector('form').onsubmit = function() {
-        document.getElementById('content').value = quill.root.innerHTML;
-    };
 </script>
 {% endblock %}

@@ -14,6 +14,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = 'blog-secret-key-2024'
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1小时
 
 # Flask-Login 配置
 login_manager = LoginManager()
@@ -21,6 +23,7 @@ login_manager.init_app(app)
 login_manager.login_view = 'login'
 login_manager.login_message = '请先登录'
 login_manager.login_message_category = 'info'
+login_manager.session_protection = 'strong'
 
 # 用户配置（单用户系统）
 ADMIN_USERNAME = 'feizi'
@@ -733,13 +736,27 @@ BASE_HTML = '''<!DOCTYPE html>
             border-radius: 0 0 4px 4px;
             min-height: 300px;
         }
-        
+
         .ql-editor {
             color: #e0e0e0;
+            min-height: 300px;
         }
-        
+
         .ql-editor.ql-blank::before {
             color: #505060;
+        }
+
+        /* Quill编辑器暗色主题修复 */
+        .ql-snow .ql-editor {
+            background: #1a1a2e !important;
+        }
+
+        .ql-snow .ql-editor p {
+            color: #e0e0e0 !important;
+        }
+
+        .ql-snow .ql-editor.ql-blank::before {
+            color: #505060 !important;
         }
         
         /* 空状态 */
@@ -1112,65 +1129,6 @@ BASE_HTML = '''<!DOCTYPE html>
             100% { transform: translate(0); }
         }
     </style>
-    <script>
-    // 打字机效果
-    document.addEventListener('DOMContentLoaded', function() {
-        var typewriterElements = document.querySelectorAll('.typewriter-title');
-        typewriterElements.forEach(function(el) {
-            var text = el.getAttribute('data-text');
-            var textSpan = el.querySelector('.typewriter-text');
-            var cursor = el.querySelector('.typewriter-cursor');
-            if (text && textSpan) {
-                var i = 0;
-                var typeInterval = setInterval(function() {
-                    if (i < text.length) {
-                        textSpan.textContent += text.charAt(i);
-                        i++;
-                    } else {
-                        clearInterval(typeInterval);
-                        setTimeout(function() {
-                            if (cursor) cursor.style.display = 'none';
-                        }, 2000);
-                    }
-                }, 100);
-            }
-        });
-    });
-    
-    // 日历交互函数 - 无刷新切换
-    let currentYear = new Date().getFullYear();
-    let currentMonth = new Date().getMonth() + 1;
-    
-    function changeMonth(year, month, delta) {
-        month += delta;
-        if (month > 12) {
-            year++;
-            month = 1;
-        } else if (month < 1) {
-            year--;
-            month = 12;
-        }
-        currentYear = year;
-        currentMonth = month;
-        loadCalendar(year, month);
-    }
-    
-    function selectDate(year, month, day) {
-        // 只高亮选中的日期，不刷新页面
-        document.querySelectorAll('.calendar-table td').forEach(td => {
-            td.classList.remove('selected');
-        });
-        event.currentTarget.classList.add('selected');
-    }
-    
-    function loadCalendar(year, month) {
-        fetch('/api/calendar?year=' + year + '&month=' + month)
-            .then(res => res.text())
-            .then(html => {
-                document.getElementById('calendar').outerHTML = html;
-            });
-    }
-    </script>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg">
@@ -1219,6 +1177,8 @@ BASE_HTML = '''<!DOCTYPE html>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
+    <script src="/static/js/main.js"></script>
+    {extra_js}
 </body>
 </html>'''
 
@@ -1235,10 +1195,7 @@ def render_page(content, title='博客', extra_js=''):
             <span class="neon-icon">◉</span> 登录
         </a>'''
     
-    # 在</body>前插入自定义JS
-    html = BASE_HTML.replace('{title}', title).replace('{content}', content).replace('{year}', str(current_year)).replace('{login_nav}', login_nav)
-    
-    # 添加 highlight.js 初始化（放在所有JS之后）
+    # 添加 highlight.js 初始化
     highlight_js = '''<script>
         // Initialize highlight.js for code blocks
         if (typeof hljs !== 'undefined') {
@@ -1246,10 +1203,9 @@ def render_page(content, title='博客', extra_js=''):
         }
     </script>'''
     
-    if extra_js:
-        html = html.replace('</body>', extra_js + highlight_js + '</body>')
-    else:
-        html = html.replace('</body>', highlight_js + '</body>')
+    # 替换所有占位符
+    html = BASE_HTML.replace('{title}', title).replace('{content}', content).replace('{year}', str(current_year)).replace('{login_nav}', login_nav).replace('{extra_js}', highlight_js + extra_js)
+    
     return html
 
 @app.route('/api/calendar')
@@ -1610,7 +1566,7 @@ def append_post(post_id):
                 <form method="POST" id="appendForm">
                     <div class="mb-3">
                         <label class="form-label">追加内容（支持直接粘贴图片）</label>
-                        <div id="editor" style="min-height: 300px; background: white;"></div>
+                        <div id="editor" style="min-height: 300px;"></div>
                         <textarea name="content" id="content" style="display:none;"></textarea>
                     </div>
                     <button type="submit" class="btn btn-primary" id="submitBtn">
@@ -1817,88 +1773,118 @@ def new_post():
     # 写博客页面 - JS放在页面底部，在Quill库加载后执行
     editor_js = '''
     <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        var quill = new Quill('#editor', {
-            theme: 'snow',
-            placeholder: '在这里写下你的文章...支持直接粘贴图片！',
-            modules: {
-                toolbar: {
-                    container: [
-                        ['bold', 'italic', 'underline', 'strike'],
-                        ['blockquote', 'code-block'],
-                        [{'header': 1}, {'header': 2}],
-                        [{'list': 'ordered'}, {'list': 'bullet'}],
-                        [{'indent': '-1'}, {'indent': '+1'}],
-                        ['link', 'image'],
-                        ['clean']
-                    ],
-                    handlers: {
-                        image: function() {
-                            var input = document.createElement('input');
-                            input.setAttribute('type', 'file');
-                            input.setAttribute('accept', 'image/*');
-                            input.click();
-                            input.onchange = function() {
-                                var file = input.files[0];
-                                if (file) {
-                                    var formData = new FormData();
-                                    formData.append('file', file);
-                                    fetch('/upload', {
-                                        method: 'POST',
-                                        body: formData
-                                    }).then(res => res.json()).then(data => {
-                                        if (data.url) {
-                                            var range = quill.getSelection();
-                                            quill.insertEmbed(range ? range.index : 0, 'image', data.url);
-                                        }
-                                    });
-                                }
-                            };
+    (function() {
+        function initEditor() {
+            if (typeof Quill === 'undefined') {
+                console.log('Quill not loaded yet, retrying...');
+                setTimeout(initEditor, 100);
+                return;
+            }
+
+            console.log('Initializing Quill editor...');
+
+            var quill = new Quill('#editor', {
+                theme: 'snow',
+                placeholder: '在这里写下你的文章...支持直接粘贴图片！',
+                modules: {
+                    toolbar: {
+                        container: [
+                            ['bold', 'italic', 'underline', 'strike'],
+                            ['blockquote', 'code-block'],
+                            [{'header': 1}, {'header': 2}],
+                            [{'list': 'ordered'}, {'list': 'bullet'}],
+                            [{'indent': '-1'}, {'indent': '+1'}],
+                            ['link', 'image'],
+                            ['clean']
+                        ],
+                        handlers: {
+                            image: function() {
+                                var input = document.createElement('input');
+                                input.setAttribute('type', 'file');
+                                input.setAttribute('accept', 'image/*');
+                                input.click();
+                                input.onchange = function() {
+                                    var file = input.files[0];
+                                    if (file) {
+                                        var formData = new FormData();
+                                        formData.append('file', file);
+                                        fetch('/upload', {
+                                            method: 'POST',
+                                            body: formData
+                                        }).then(res => res.json()).then(data => {
+                                            if (data.url) {
+                                                var range = quill.getSelection();
+                                                quill.insertEmbed(range ? range.index : 0, 'image', data.url);
+                                            }
+                                        });
+                                    }
+                                };
+                            }
                         }
                     }
                 }
-            }
-        });
-        
-        // 粘贴图片处理
-        quill.root.addEventListener('paste', function(e) {
-            var items = e.clipboardData.items;
-            for (var i = 0; i < items.length; i++) {
-                if (items[i].type.indexOf('image') !== -1) {
-                    e.preventDefault();
-                    var blob = items[i].getAsFile();
-                    var reader = new FileReader();
-                    reader.onload = function(event) {
-                        fetch('/upload', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({image: event.target.result})
-                        }).then(res => res.json()).then(data => {
-                            if (data.url) {
-                                var range = quill.getSelection();
-                                quill.insertEmbed(range ? range.index : 0, 'image', data.url);
-                            }
-                        });
-                    };
-                    reader.readAsDataURL(blob);
-                    break;
+            });
+
+            console.log('Quill editor initialized');
+
+            // 粘贴图片处理
+            quill.root.addEventListener('paste', function(e) {
+                var items = e.clipboardData.items;
+                for (var i = 0; i < items.length; i++) {
+                    if (items[i].type.indexOf('image') !== -1) {
+                        e.preventDefault();
+                        var blob = items[i].getAsFile();
+                        var reader = new FileReader();
+                        reader.onload = function(event) {
+                            fetch('/upload', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({image: event.target.result})
+                            }).then(res => res.json()).then(data => {
+                                if (data.url) {
+                                    var range = quill.getSelection();
+                                    quill.insertEmbed(range ? range.index : 0, 'image', data.url);
+                                }
+                            });
+                        };
+                        reader.readAsDataURL(blob);
+                        break;
+                    }
                 }
+            });
+
+            // 表单提交处理
+            var form = document.getElementById('postForm');
+            var submitBtn = document.getElementById('submitBtn');
+            var contentField = document.getElementById('content');
+
+            if (form && submitBtn && contentField) {
+                form.onsubmit = function(e) {
+                    console.log('Form submit triggered');
+                    var html = quill.root.innerHTML;
+                    // 检查是否有实际内容（文本或图片）
+                    var hasText = quill.getText().trim().length > 0;
+                    var hasImage = html.includes('<img');
+                    if (!hasText && !hasImage) {
+                        alert('请输入内容');
+                        return false;
+                    }
+                    contentField.value = html;
+                    submitBtn.disabled = true;
+                    submitBtn.innerHTML = '⏳ 发布中...';
+                    console.log('Submitting with content length:', html.length);
+                    return true;
+                };
             }
-        });
-        
-        document.getElementById('postForm').onsubmit = function() {
-            var html = quill.root.innerHTML;
-            // 检查是否有实际内容（文本或图片）
-            var hasText = quill.getText().trim().length > 0;
-            var hasImage = html.includes('<img');
-            if (!hasText && !hasImage) {
-                alert('请输入内容');
-                return false;
-            }
-            document.getElementById('content').value = html;
-            return true;
-        };
-    });
+        }
+
+        // 启动初始化
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initEditor);
+        } else {
+            initEditor();
+        }
+    })();
     </script>'''
     
     content = f'''
@@ -1913,10 +1899,10 @@ def new_post():
                     </div>
                     <div class="mb-3">
                         <label class="form-label">内容（支持直接粘贴图片）</label>
-                        <div id="editor" style="min-height: 300px; background: white;"></div>
+                        <div id="editor" style="min-height: 300px;"></div>
                         <textarea name="content" id="content" style="display:none;"></textarea>
                     </div>
-                    <button type="submit" class="btn btn-primary">
+                    <button type="submit" class="btn btn-primary" id="submitBtn">
                         🚀 发布
                     </button>
                     <a href="/" class="btn btn-outline-secondary ms-2">取消</a>

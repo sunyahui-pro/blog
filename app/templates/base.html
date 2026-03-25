@@ -68,5 +68,6 @@
     <script src="https://cdn.jsdelivr.net/npm/quill@2.0.2/dist/quill.js"></script>
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
     <script>hljs.highlightAll();</script>
+    {% block scripts %}{% endblock %}
 </body>
 </html>

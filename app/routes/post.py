@@ -1,4 +1,5 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash
+from flask_login import login_required
 from app.models import Post, PostUpdate
 from app import db
 from datetime import datetime
@@ -15,6 +16,7 @@ def post_detail(id):
 
 
 @bp.route('/new', methods=['GET', 'POST'])
+@login_required
 def new_post():
     """新建文章"""
     if request.method == 'POST':
@@ -43,6 +45,7 @@ def new_post():
 
 
 @bp.route('/delete/<int:id>', methods=['POST'])
+@login_required
 def delete_post(id):
     """删除文章"""
     post = Post.query.get_or_404(id)
@@ -53,6 +56,7 @@ def delete_post(id):
 
 
 @bp.route('/append/<int:id>', methods=['GET', 'POST'])
+@login_required
 def append_update(id):
     """追加更新文章"""
     post = Post.query.get_or_404(id)
