@@ -137,10 +137,23 @@ def generate_calendar(year=None, month=None, selected_date=None):
 
 @main.route('/')
 def index():
-    # 获取所有文章
-    posts = Post.query.order_by(Post.created_at.desc()).all()
-    all_posts = posts
-    recent_posts = posts[:5]
+    # 获取分页参数
+    page = request.args.get('page', 1, type=int)
+    per_page = 7
+    
+    # 获取文章分页
+    posts_pagination = Post.query.order_by(Post.created_at.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    posts = posts_pagination.items
+    has_more = posts_pagination.has_next
+    next_page = page + 1 if has_more else None
+    
+    # 文章目录 - 显示7个，带查看更多
+    all_posts = Post.query.order_by(Post.created_at.desc()).all()
+    
+    # 最近更新 - 只显示3个
+    recent_posts = Post.query.order_by(Post.updated_at.desc()).limit(3).all()
     
     # 统计数据
     from sqlalchemy import func
@@ -170,12 +183,15 @@ def index():
     
     return render_template('index.html', 
                          posts=posts, 
-                         all_posts=all_posts, 
+                         all_posts=all_posts,
                          recent_posts=recent_posts,
                          stats=stats,
                          quote=quote,
                          fengshui=fengshui,
-                         calendar=cal_html)
+                         calendar=cal_html,
+                         has_more=has_more,
+                         next_page=next_page,
+                         current_page=page)
 
 @main.route('/calendar')
 def calendar_page():
@@ -188,3 +204,37 @@ def api_calendar():
     year = request.args.get('year', type=int, default=datetime.now().year)
     month = request.args.get('month', type=int, default=datetime.now().month)
     return generate_calendar(year, month)
+
+
+@main.route('/api/posts')
+def api_posts():
+    """AJAX 获取文章列表"""
+    page = request.args.get('page', 1, type=int)
+    per_page = 7
+    
+    pagination = Post.query.order_by(Post.created_at.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    
+    posts = []
+    for post in pagination.items:
+        content_text = post.content
+        # 去除 HTML 标签并截取前200字
+        import re
+        content_text = re.sub(r'<[^>]+>', '', content_text)
+        excerpt = content_text[:200] if len(content_text) > 200 else content_text
+        
+        posts.append({
+            'id': post.id,
+            'title': post.title,
+            'author': post.author,
+            'created_at': post.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'excerpt': excerpt
+        })
+    
+    return jsonify({
+        'posts': posts,
+        'has_more': pagination.has_next,
+        'current_page': page,
+        'total_pages': pagination.pages
+    })

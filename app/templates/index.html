@@ -18,23 +18,33 @@
                 <div class="sidebar-card">
                     <div class="card-header">◈ 文章目录</div>
                     <div class="card-body">
-                        <ul class="sidebar-list">
-                            {% for post in all_posts[:10] %}
+                        <ul class="sidebar-list" id="catalog-list">
+                            {% for post in all_posts[:7] %}
                             <li><a href="{{ url_for('post.post_detail', id=post.id) }}">{{ post.title[:20] }}{% if post.title|length > 20 %}...{% endif %}</a></li>
                             {% endfor %}
                         </ul>
+                        <ul class="sidebar-list" id="catalog-more" style="display: none;">
+                            {% for post in all_posts[7:] %}
+                            <li><a href="{{ url_for('post.post_detail', id=post.id) }}">{{ post.title[:20] }}{% if post.title|length > 20 %}...{% endif %}</a></li>
+                            {% endfor %}
+                        </ul>
+                        {% if all_posts|length > 7 %}
+                        <div class="text-center mt-2" style="border-top: 1px solid rgba(0,240,255,0.1); padding-top: 10px;">
+                            <a href="javascript:void(0)" onclick="toggleCatalog()" id="catalog-link" style="color: var(--neon-cyan); font-size: 0.85rem; text-decoration: none;">查看更多 →</a>
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
                 
                 <div class="sidebar-card">
                     <div class="card-header">◈ 最近更新</div>
                     <div class="card-body">
-                        <ul class="sidebar-list">
-                            {% for post in recent_posts %}
+                        <ul class="sidebar-list" id="recent-list">
+                            {% for post in recent_posts[:3] %}
                             <li>
                                 <a href="{{ url_for('post.post_detail', id=post.id) }}">
                                     {{ post.title[:18] }}{% if post.title|length > 18 %}...{% endif %}
-                                    <span class="time">{{ post.created_at.strftime('%m-%d %H:%M') }}</span>
+                                    <span class="time">{{ post.updated_at.strftime('%m-%d %H:%M') }}</span>
                                 </a>
                             </li>
                             {% endfor %}
@@ -73,6 +83,7 @@
                 <p style="color: #606070;">开始<a href="{{ url_for('post.new_post') }}" style="color: var(--neon-cyan);">写第一篇博客</a>吧</p>
             </div>
             {% else %}
+                <div id="posts-container">
                 {% for post in posts %}
                 <div class="card mb-4 post-card">
                     <div class="card-body">
@@ -89,6 +100,15 @@
                     </div>
                 </div>
                 {% endfor %}
+                </div>
+                
+                {% if has_more %}
+                <div class="text-center py-4">
+                    <button class="btn btn-primary" id="load-more-btn" onclick="loadMorePosts()">
+                        查看更多 <span id="loading-spinner" style="display: none;">⏳</span>
+                    </button>
+                </div>
+                {% endif %}
             {% endif %}
         </div>
         
@@ -131,4 +151,76 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// 文章目录展开/收起
+function toggleCatalog() {
+    var more = document.getElementById('catalog-more');
+    var link = document.getElementById('catalog-link');
+    if (more.style.display === 'none') {
+        more.style.display = 'block';
+        link.textContent = '收起 ↑';
+    } else {
+        more.style.display = 'none';
+        link.textContent = '查看更多 →';
+    }
+}
+
+// 加载更多文章
+var currentPage = {{ current_page }};
+var hasMore = {{ 'true' if has_more else 'false' }};
+
+function loadMorePosts() {
+    if (!hasMore) return;
+    
+    var btn = document.getElementById('load-more-btn');
+    var spinner = document.getElementById('loading-spinner');
+    
+    btn.disabled = true;
+    spinner.style.display = 'inline';
+    
+    currentPage++;
+    
+    fetch('/api/posts?page=' + currentPage)
+        .then(res => res.json())
+        .then(data => {
+            var container = document.getElementById('posts-container');
+            
+            data.posts.forEach(function(post) {
+                var html = `
+                <div class="card mb-4 post-card">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <a href="/post/${post.id}">${post.title}</a>
+                        </h5>
+                        <p class="text-muted mb-2">
+                            👤 ${post.author} &nbsp;|&nbsp; 📅 ${post.created_at.split(' ')[0]}
+                        </p>
+                        <p class="card-text content-text">${post.excerpt}...</p>
+                    </div>
+                    <div class="card-footer bg-transparent border-0 pt-0 pb-3 px-4">
+                        <a href="/post/${post.id}" class="btn btn-sm btn-primary">阅读全文 →</a>
+                    </div>
+                </div>
+                `;
+                container.insertAdjacentHTML('beforeend', html);
+            });
+            
+            hasMore = data.has_more;
+            if (!hasMore) {
+                btn.style.display = 'none';
+            } else {
+                btn.disabled = false;
+            }
+            spinner.style.display = 'none';
+        })
+        .catch(err => {
+            console.error('加载失败:', err);
+            btn.disabled = false;
+            spinner.style.display = 'none';
+        });
+}
+</script>
 {% endblock %}

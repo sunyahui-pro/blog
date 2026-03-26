@@ -11,7 +11,7 @@
                     <h3 class="mb-0" style="color: var(--neon-cyan); font-family: Orbitron;">◈ 写新文章</h3>
                 </div>
                 <div class="card-body p-4">
-                    <form method="POST" action="{{ url_for('post.new_post') }}">
+                    <form method="POST" id="postForm" action="{{ url_for('post.new_post') }}">
                         <div class="mb-3">
                             <label for="title" class="form-label">标题</label>
                             <input type="text" class="form-control" id="title" name="title" required placeholder="输入文章标题...">
@@ -23,12 +23,13 @@
                         </div>
                         
                         <div class="mb-3">
-                            <label class="form-label">内容</label>
-                            <textarea name="content" id="content" class="form-control" rows="10" required placeholder="输入文章内容..."></textarea>
+                            <label class="form-label">内容（支持直接粘贴图片）</label>
+                            <div id="editor" style="min-height: 300px; background: white;"></div>
+                            <textarea name="content" id="content" style="display: none;"></textarea>
                         </div>
                         
                         <div class="d-flex gap-2">
-                            <button type="submit" class="btn btn-primary">发布文章</button>
+                            <button type="submit" class="btn btn-primary" id="submitBtn">🚀 发布</button>
                             <a href="{{ url_for('main.index') }}" class="btn btn-outline-secondary">取消</a>
                         </div>
                     </form>
@@ -40,14 +41,122 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.tiny.cloud/1/no-api-key/tinymce/6/tinymce.min.js" referrerpolicy="origin"></script>
+<!-- Quill 编辑器 CSS -->
+<link href="https://cdn.quilljs.com/1.3.7/quill.snow.css" rel="stylesheet">
+<!-- Quill 编辑器 JS -->
+<script src="https://cdn.quilljs.com/1.3.7/quill.min.js"></script>
 <script>
-    tinymce.init({
-        selector: '#content',
-        plugins: 'anchor autolink charmap codesample emoticons image link lists media searchreplace table visualblocks wordcount',
-        toolbar: 'undo redo | blocks fontfamily fontsize | bold italic underline strikethrough | link image media table | align lineheight | numlist bullist indent outdent | emoticons charmap | removeformat',
-        height: 400,
-        placeholder: '开始写作...'
-    });
+(function() {
+    function initEditor() {
+        if (typeof Quill === 'undefined') {
+            console.log('Quill not loaded yet, retrying...');
+            setTimeout(initEditor, 100);
+            return;
+        }
+
+        console.log('Initializing Quill editor...');
+
+        var quill = new Quill('#editor', {
+            theme: 'snow',
+            placeholder: '在这里写下你的文章...支持直接粘贴图片！',
+            modules: {
+                toolbar: {
+                    container: [
+                        ['bold', 'italic', 'underline', 'strike'],
+                        ['blockquote', 'code-block'],
+                        [{'header': 1}, {'header': 2}],
+                        [{'list': 'ordered'}, {'list': 'bullet'}],
+                        [{'indent': '-1'}, {'indent': '+1'}],
+                        ['link', 'image'],
+                        ['clean']
+                    ],
+                    handlers: {
+                        image: function() {
+                            var input = document.createElement('input');
+                            input.setAttribute('type', 'file');
+                            input.setAttribute('accept', 'image/*');
+                            input.click();
+                            input.onchange = function() {
+                                var file = input.files[0];
+                                if (file) {
+                                    var formData = new FormData();
+                                    formData.append('file', file);
+                                    fetch('/upload', {
+                                        method: 'POST',
+                                        body: formData
+                                    }).then(res => res.json()).then(data => {
+                                        if (data.url) {
+                                            var range = quill.getSelection();
+                                            quill.insertEmbed(range ? range.index : 0, 'image', data.url);
+                                        }
+                                    });
+                                }
+                            };
+                        }
+                    }
+                }
+            }
+        });
+
+        console.log('Quill editor initialized');
+
+        // 粘贴图片处理
+        quill.root.addEventListener('paste', function(e) {
+            var items = e.clipboardData.items;
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].type.indexOf('image') !== -1) {
+                    e.preventDefault();
+                    var blob = items[i].getAsFile();
+                    var reader = new FileReader();
+                    reader.onload = function(event) {
+                        fetch('/upload', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({image: event.target.result})
+                        }).then(res => res.json()).then(data => {
+                            if (data.url) {
+                                var range = quill.getSelection();
+                                quill.insertEmbed(range ? range.index : 0, 'image', data.url);
+                            }
+                        });
+                    };
+                    reader.readAsDataURL(blob);
+                    break;
+                }
+            }
+        });
+
+        // 表单提交处理
+        var form = document.getElementById('postForm');
+        var submitBtn = document.getElementById('submitBtn');
+        var contentField = document.getElementById('content');
+
+        if (form && submitBtn && contentField) {
+            form.onsubmit = function(e) {
+                console.log('Form submit triggered');
+                var html = quill.root.innerHTML;
+                // 检查是否有实际内容（文本或图片）
+                var hasText = quill.getText().trim().length > 0;
+                var hasImage = html.includes('<img');
+                if (!hasText && !hasImage) {
+                    alert('请输入内容');
+                    return false;
+                }
+                contentField.value = html;
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '⏳ 发布中...';
+                console.log('Submitting with content length:', html.length);
+                return true;
+            };
+        }
+    }
+
+    // 启动初始化
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initEditor);
+    } else {
+        initEditor();
+    }
+})();
 </script>
 {% endblock %}
